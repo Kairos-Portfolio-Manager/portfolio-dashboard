@@ -25,7 +25,7 @@ jobs:
       - name: Check out canonical backend contracts
         uses: actions/checkout@v4
         with:
-          repository: samuelhuffard/portfolio-manager
+          repository: Kairos-Portfolio-Manager/portfolio-manager
           ref: mandate-v3
           path: portfolio-manager
 

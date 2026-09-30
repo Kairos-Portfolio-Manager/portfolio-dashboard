@@ -1,6 +1,6 @@
 # Portfolio Manager — Dashboard
 
-The human side of [Portfolio Manager](https://github.com/samuelhuffard/portfolio-manager): where every AI-generated trade proposal gets reviewed, and where the account's actual state — holdings, performance, research history — lives.
+The human side of [Portfolio Manager](https://github.com/Kairos-Portfolio-Manager/portfolio-manager): where every AI-generated trade proposal gets reviewed, and where the account's actual state — holdings, performance, research history — lives.
 
 ## What's here
 
@@ -16,4 +16,4 @@ A separate process (`scripts/mac-companion.mjs`) runs on a machine outside this 
 
 ## Stack
 
-Next.js 16, Clerk auth, Vercel. Shares a Google Sheet (system of record) and Upstash Redis instance with the [backend](https://github.com/samuelhuffard/portfolio-manager).
+Next.js 16, Clerk auth, Vercel. Shares a Google Sheet (system of record) and Upstash Redis instance with the [backend](https://github.com/Kairos-Portfolio-Manager/portfolio-manager).

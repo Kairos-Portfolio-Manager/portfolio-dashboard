@@ -10,7 +10,7 @@ Production:
 - https://portfolio-dashboard-ivory-five.vercel.app
 
 GitHub:
-- https://github.com/samuelhuffard/portfolio-dashboard
+- https://github.com/Kairos-Portfolio-Manager/portfolio-dashboard
 
 The dashboard is functional and deployed. It now combines the original portfolio manager UI with the useful Quant.ai research workflows, then wraps everything in a new dark, investment-terminal style design.
 
