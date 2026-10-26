@@ -28,6 +28,7 @@ import {
   isPlausibleOrderId,
   isMarketOpen,
   resolveCompanionRole,
+  mcpReadRetryLeaseSeconds,
 } from "./companion-core.mjs";
 import { McpReadJobKindSchema, McpReadRequestSchema } from "../lib/contracts/mcp-read-job.js";
 import {
@@ -131,6 +132,25 @@ if current ~= ARGV[1] then return 0 end
 redis.call("LPOP", KEYS[1])
 return 1
 `;
+// One EVAL per idle tick (Upstash bills a script as a single command) writes
+// the liveness heartbeat and reports, per scheduled read kind, whether a queued
+// request exists with no active lease. KEYS = [heartbeat, then (request, queue,
+// lease) per kind]; ARGV = [iso timestamp, heartbeat ttl seconds].
+const HEARTBEAT_AND_PENDING_SCRIPT = `
+redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
+local pending = {}
+for i = 2, #KEYS, 3 do
+  local work = redis.call("EXISTS", KEYS[i]) == 1 or redis.call("LLEN", KEYS[i + 1]) > 0
+  if work and redis.call("EXISTS", KEYS[i + 2]) == 0 then
+    pending[#pending + 1] = 1
+  else
+    pending[#pending + 1] = 0
+  end
+end
+return pending
+`;
+const SCHEDULED_MCP_READ_KINDS = ["holdings-sync", "order-reconciliation"];
+const mcpReadConsecutiveFailures = new Map();
 const MARKET_SYNC_DISALLOWED_TOOLS = [
   "mcp__robinhood-trading__place_equity_order",
   "mcp__robinhood-trading__place_option_order",
@@ -277,8 +297,14 @@ async function processMcpReadRequest(kind, run) {
     await recordMcpReadReceipt(claim, { ok: false, outcome: "failed", error: safeError });
     // Leave the request durable. The next heartbeat may retry after the lease
     // expires; request-id idempotency prevents a duplicate Performance row.
-    await redisPost(["set", mcpReadLeaseKey(request.kind), request.id, "EX", MCP_READ_LEASE_SECONDS]).catch(() => null);
+    // Repeated failures back off so a persistent fault (expired CLI login)
+    // does not rewrite receipts and history every few minutes.
+    const failures = (mcpReadConsecutiveFailures.get(kind) ?? 0) + 1;
+    mcpReadConsecutiveFailures.set(kind, failures);
+    await redisPost(["set", mcpReadLeaseKey(request.kind), request.id, "EX", mcpReadRetryLeaseSeconds(failures, MCP_READ_LEASE_SECONDS)]).catch(() => null);
+    return;
   }
+  mcpReadConsecutiveFailures.delete(kind);
 }
 
 async function getProposal(id) {
@@ -903,7 +929,17 @@ async function poll(force = false) {
 async function heartbeat() {
   // Keep execution and broker-reader liveness distinct during split-host
   // operation; one healthy role must never conceal failure of the other.
-  await redisPost(["set", COMPANION_ROLE.heartbeatKey, new Date().toISOString(), "EX", 3600]).catch(() => null);
+  // Broker-read roles fold the heartbeat and the idle queue check into one
+  // Redis command; if it fails every kind is checked (the older, costlier path).
+  let pendingReads = null;
+  if (COMPANION_ROLE.brokerReads) {
+    const keys = [COMPANION_ROLE.heartbeatKey];
+    for (const kind of SCHEDULED_MCP_READ_KINDS) keys.push(mcpReadRequestKey(kind), mcpReadQueueKey(kind), mcpReadLeaseKey(kind));
+    pendingReads = await redisPost(["eval", HEARTBEAT_AND_PENDING_SCRIPT, String(keys.length), ...keys, new Date().toISOString(), "3600"]).catch(() => null);
+    if (!Array.isArray(pendingReads)) pendingReads = null;
+  } else {
+    await redisPost(["set", COMPANION_ROLE.heartbeatKey, new Date().toISOString(), "EX", 3600]).catch(() => null);
+  }
 
   if (COMPANION_ROLE.execution) {
     const triggered = await redisCmd("getdel", "pm:exec_trigger").catch(() => null);
@@ -922,11 +958,16 @@ async function heartbeat() {
   }
 
   if (COMPANION_ROLE.brokerReads) {
-    await processMcpReadRequest("holdings-sync", async (request) => {
-      await syncHoldings({ requestId: request.id, invocationId: request.invocationId });
-      return "ok";
-    });
-    await processMcpReadRequest("order-reconciliation", (request) => runDailyReconciliation(request.requestedForET));
+    const due = (kind) => pendingReads === null || Number(pendingReads[SCHEDULED_MCP_READ_KINDS.indexOf(kind)]) === 1;
+    if (due("holdings-sync")) {
+      await processMcpReadRequest("holdings-sync", async (request) => {
+        await syncHoldings({ requestId: request.id, invocationId: request.invocationId });
+        return "ok";
+      });
+    }
+    if (due("order-reconciliation")) {
+      await processMcpReadRequest("order-reconciliation", (request) => runDailyReconciliation(request.requestedForET));
+    }
   }
 }
 

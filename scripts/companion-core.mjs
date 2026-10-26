@@ -12,6 +12,16 @@ import { computeDecisionSignature } from "../lib/contracts/signature.js";
 import { checkSellOwnerShareLimitForExecution } from "../lib/contracts/proposal.js";
 export { computeDecisionSignature };
 
+// ── Scheduled-read retry backoff ───────────────────────────────────────────
+// A failed MCP read stays queued and is retried when its lease lapses. A
+// persistent failure (expired CLI login) must not retry — and write receipt
+// history to Redis — every 5 minutes forever: 1st failure waits the base
+// lease, then it doubles per consecutive failure up to the cap.
+export function mcpReadRetryLeaseSeconds(consecutiveFailures, baseSeconds = 300, maxSeconds = 3600) {
+  const n = Math.max(1, Math.floor(Number(consecutiveFailures) || 1));
+  return Math.min(baseSeconds * 2 ** Math.min(n - 1, 10), maxSeconds);
+}
+
 // ── Process role isolation ─────────────────────────────────────────────────
 // Keep scheduled broker reads and signed trade execution separable so an
 // always-on read worker cannot accidentally gain execution authority.

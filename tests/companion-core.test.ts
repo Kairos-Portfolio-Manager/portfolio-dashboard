@@ -11,6 +11,7 @@ import {
   isPlausibleOrderId,
   isMarketOpen,
   resolveCompanionRole,
+  mcpReadRetryLeaseSeconds,
   MARKET_HOLIDAYS,
 } from "../scripts/companion-core.mjs";
 import { computeDecisionSignature as dashboardSignature } from "../lib/proposals";
@@ -158,7 +159,7 @@ test("companion startup and queues are gated by the resolved role", () => {
   assert.match(source, /const COMPANION_ROLE = resolveCompanionRole\(process\.env\.COMPANION_ROLE\)/);
   assert.match(source, /if \(!COMPANION_ROLE\.execution\) return/);
   assert.match(source, /if \(COMPANION_ROLE\.execution\) \{\s*const triggered = await redisCmd\("getdel", "pm:exec_trigger"/);
-  assert.match(source, /if \(COMPANION_ROLE\.brokerReads\) \{\s*await processMcpReadRequest\("holdings-sync"/);
+  assert.match(source, /if \(COMPANION_ROLE\.brokerReads\) \{\s*const due = [^\n]*\n\s*if \(due\("holdings-sync"\)\) \{\s*await processMcpReadRequest\("holdings-sync"/);
   assert.match(source, /if \(COMPANION_ROLE\.execution\) setInterval\(poll, POLL_INTERVAL_MS\)/);
   assert.match(source, /COMPANION_ROLE\.heartbeatKey/);
   assert.match(source, /verifySellFillWithinOwnerShareCeiling\(proposal, shares\)/);
@@ -266,4 +267,19 @@ test("market clock: weekends, holidays, and hours", () => {
   // Winter (EST): Mon 2026-12-14 10:00 ET = 15:00 UTC — open.
   assert.equal(isMarketOpen(new Date("2026-12-14T15:00:00Z")), true);
   assert.ok(MARKET_HOLIDAYS.has("2027-12-24"), "holiday list must extend into 2027");
+});
+
+test("scheduled MCP read retries back off and cap instead of repeating every lease", () => {
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 50].map((n) => mcpReadRetryLeaseSeconds(n)), [300, 600, 1200, 2400, 3600, 3600, 3600]);
+  assert.equal(mcpReadRetryLeaseSeconds(0), 300);
+  assert.equal(mcpReadRetryLeaseSeconds(undefined), 300);
+});
+
+test("idle read-worker ticks use one Redis command and honour leases and backoff", () => {
+  const source = readFileSync(new URL("../scripts/mac-companion.mjs", import.meta.url), "utf8");
+  assert.match(source, /redisPost\(\["eval", HEARTBEAT_AND_PENDING_SCRIPT/);
+  assert.match(source, /if \(due\("holdings-sync"\)\)/);
+  assert.match(source, /if \(due\("order-reconciliation"\)\)/);
+  assert.match(source, /mcpReadRetryLeaseSeconds\(failures, MCP_READ_LEASE_SECONDS\)/);
+  assert.match(source, /redis\.call\("EXISTS", KEYS\[i \+ 2\]\) == 0/, "an active lease suppresses the per-tick claim attempt");
 });
