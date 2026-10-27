@@ -42,7 +42,8 @@ export type AuditAction =
   | "PORTFOLIO_MANAGER_SHADOW_READ"
   | "OBSERVATION_READ"
   | "OBSERVATION_UPDATE_POST"
-  | "RATE_LIMIT_REJECT";
+  | "RATE_LIMIT_REJECT"
+  | "PITCH_LAB_READ";
 
 export interface AuditEventInput {
   userId?: string | null;

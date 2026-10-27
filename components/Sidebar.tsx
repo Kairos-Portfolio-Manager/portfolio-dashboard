@@ -19,6 +19,7 @@ const links: NavItem[] = [
   { href: '/agents', label: 'Agents', roles: ['FundManager'] },
   { href: '/portfolio-manager', label: 'Kairos', roles: ['FundManager'] },
   { href: '/research', label: 'Labs', roles: ['FundManager'] },
+  { href: '/pitch-lab', label: 'Pitch Lab', roles: ['FundManager'] },
 ];
 
 /**
