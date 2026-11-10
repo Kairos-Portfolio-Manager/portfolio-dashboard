@@ -92,7 +92,7 @@ export default function Sidebar({ role }: { role: PortfolioRole }) {
 
         <nav aria-label="Primary navigation" className="flex items-stretch" style={{ height: 54, gap: 2 }}>
           {visibleLinks.map((link) => {
-            const active = pathname === link.href;
+            const active = pathname === link.href || (link.href !== '/' && !!pathname?.startsWith(`${link.href}/`));
             const label = typeof link.label === 'string' ? link.label : link.label[role];
             return (
               <Link

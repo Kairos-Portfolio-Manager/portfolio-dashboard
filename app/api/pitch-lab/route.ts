@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiPermission } from "@/lib/auth";
 import { getRedis } from "@/lib/redis";
+import { REVIEW_INDEX_KEY, SNAPSHOT_KEY, reviewIndexFrom, snapshotFromEnvelope } from "@/lib/pitch-lab";
 
-const MANDATE_REVIEW_KEY = "pitchlab:mandate-review";
-const SNAPSHOT_KEY = "pitchlab:snapshot";
-
+/** Front page: the program snapshot plus the list of review periods (empty until the first review). */
 export async function GET(req: NextRequest) {
   const authz = await requireApiPermission({
     permission: "portfolio:full",
@@ -18,22 +17,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Redis is not configured." }, { status: 503 });
   }
 
-  const [reviewRaw, snapshotRaw] = await Promise.all([
-    redis.get(MANDATE_REVIEW_KEY),
-    redis.get(SNAPSHOT_KEY),
-  ]);
-
-  const envelope = reviewRaw
-    ? typeof reviewRaw === "string" ? JSON.parse(reviewRaw) : reviewRaw
-    : null;
-
-  const snapshot = snapshotRaw
-    ? typeof snapshotRaw === "string" ? JSON.parse(snapshotRaw) : snapshotRaw
-    : null;
+  const [snapshotRaw, indexRaw] = await Promise.all([redis.get(SNAPSHOT_KEY), redis.get(REVIEW_INDEX_KEY)]);
 
   return NextResponse.json({
-    review: envelope?.review ?? null,
-    publishedAt: envelope?.publishedAt ?? null,
-    snapshot: snapshot?.snapshot ?? null,
+    snapshot: snapshotFromEnvelope(snapshotRaw),
+    reviews: reviewIndexFrom(indexRaw)?.reviews ?? [],
   });
 }
