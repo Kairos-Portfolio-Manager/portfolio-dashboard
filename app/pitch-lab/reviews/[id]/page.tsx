@@ -48,9 +48,9 @@ export default function PitchLabReviewPage() {
           )
         }
         rail={
-          <RailBlock title="Review periods">
+          <RailBlock title="Mandate Review">
             <Link href="/pitch-lab/reviews" className="text-sm" style={{ color: "var(--link)" }}>
-              ← All review periods
+              ← All Mandate Reviews
             </Link>
           </RailBlock>
         }

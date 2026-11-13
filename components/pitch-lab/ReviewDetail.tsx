@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Panel, PanelHead, Status } from "@/components/chrome";
 import {
-  REVIEW_STATUS_LABEL, fmtDate, pct, periodLabel,
+  REVIEW_STATUS_LABEL, fmtDate, pct, periodLabel, verdictLabel,
   type ConvictionSummary, type EvidenceHorizon, type MandateReview, type MandateScoreSummary, type MetricReview,
 } from "@/lib/pitch-lab";
 
@@ -22,14 +22,6 @@ function directionLabel(dir: MetricReview["suggestedDirection"]): string {
   return "—";
 }
 
-function verdictLabel(v: string): string {
-  if (v === "positive") return "Positive";
-  if (v === "negative") return "Negative";
-  if (v === "inconclusive") return "Inconclusive";
-  if (v === "insufficient_data") return "Insufficient data";
-  return v ?? "—";
-}
-
 function StatusBanner({ review, publishedAt }: { review: MandateReview; publishedAt: string | null }) {
   const d = review.insufficientData;
   const tone: "pos" | "warn" | "muted" = review.status === "has_suggestions" ? "pos" : review.status === "insufficient_data" ? "warn" : "muted";
@@ -37,7 +29,7 @@ function StatusBanner({ review, publishedAt }: { review: MandateReview; publishe
     <Panel>
       <div className="flex items-start justify-between p-5">
         <div>
-          <p className="pm-label mb-2">{periodLabel(review.period)} review</p>
+          <p className="pm-label mb-2">Mandate Review · {periodLabel(review.period)}</p>
           <p className="text-base font-semibold">
             <Status tone={tone}>{REVIEW_STATUS_LABEL[review.status] ?? review.status}</Status>
           </p>

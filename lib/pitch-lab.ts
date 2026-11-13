@@ -94,6 +94,25 @@ export interface ScoreboardEntry {
   legacyConvictionBuckets: ConvictionBucket[];
 }
 
+export interface Performer {
+  ticker: string;
+  pitchDate: string;
+  /** The session we got in: the first close after the pitch. */
+  entryDate: string | null;
+  exitDate: string | null;
+  horizonDays: number;
+  /** The stock's own close-to-close change, before costs, no benchmark. */
+  rawReturn: number | null;
+  excessReturn: number | null;
+}
+
+export interface Performers {
+  basis: string;
+  ranked: number;
+  best: Performer[];
+  worst: Performer[];
+}
+
 export interface PitchLabSnapshot {
   schemaVersion: string;
   generatedAt: string;
@@ -125,12 +144,14 @@ export interface PitchLabSnapshot {
   recent: RecentPitch[];
   days: { date: string; pitched: number; avgConviction: number | null; avgMandateScore: number | null }[];
   scoreboard: Record<string, ScoreboardEntry>;
+  /** Absent on snapshots published before the 2026-11-14 backend; the page says so rather than guessing. */
+  performers?: Performers;
 }
 
 /** Top-level snapshot fields this page reads; the cross-repo test pins them to the backend. */
 export const SNAPSHOT_FIELDS = [
   "benchmark", "convictionScale", "days", "evidenceBar", "generatedAt", "horizons", "latest",
-  "program", "recent", "schedule", "schemaVersion", "scoreboard",
+  "performers", "program", "recent", "schedule", "schemaVersion", "scoreboard",
 ] as const;
 
 // ─── Mandate Review ──────────────────────────────────────────────────────────
@@ -198,6 +219,8 @@ export interface ReviewIndexEntry {
   independentWeeks: number | null;
   recommended: number;
   watch: number;
+  /** Did the Mandate Score go with beating SPY? Absent on index rows published before 2026-11-14. */
+  mandateScoreVerdict?: string | null;
 }
 
 export interface ReviewIndex {
@@ -258,6 +281,27 @@ export function fmtDate(iso: string | null | undefined): string {
   return at.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/New_York" });
 }
 
+/**
+ * The next Mandate Review, never a time already past. Reviews are weekly, so a snapshot
+ * published before the last review ran is rolled forward a week at a time.
+ */
+export function upcomingReviewAt(iso: string | null | undefined, now: Date = new Date()): string | null {
+  if (!iso) return null;
+  let at = Date.parse(iso);
+  if (!Number.isFinite(at)) return null;
+  const WEEK_MS = 7 * 86_400_000;
+  while (at <= now.getTime()) at += WEEK_MS;
+  return new Date(at).toISOString();
+}
+
+/** "Saturday, November 14, 2026" — the review's day in New York. */
+export function fmtLongDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "—";
+  return at.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" });
+}
+
 /** "in 3 days", "in 5 hours", "in 20 minutes", "due now" */
 export function timeUntil(iso: string | null | undefined, now: Date = new Date()): string {
   if (!iso) return "—";
@@ -272,8 +316,9 @@ export function timeUntil(iso: string | null | undefined, now: Date = new Date()
   return `in ${days} day${days === 1 ? "" : "s"}`;
 }
 
-/** "2026-11" → "November 2026" */
+/** "2026-11-14" → "Week of Nov 14, 2026" (weekly reviews); legacy "2026-11" → "November 2026" (monthly reviews) */
 export function periodLabel(period: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(period ?? "")) return `Week of ${fmtDate(period)}`;
   const match = /^(\d{4})-(\d{2})$/.exec(period ?? "");
   if (!match) return period ?? "—";
   return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 15)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
@@ -295,6 +340,15 @@ export function beatTiles(snapshot: PitchLabSnapshot): BeatTile[] {
       const entry = snapshot.scoreboard?.[String(h)];
       return { horizonDays: h, graded: entry?.graded ?? 0, beat: entry?.beat ?? 0, hitRate: entry?.hitRate ?? null, pending: entry?.pending ?? 0 };
     });
+}
+
+/** Mandate Review verdicts in plain words. */
+export function verdictLabel(v: string | null | undefined): string {
+  if (v === "positive") return "Positive";
+  if (v === "negative") return "Negative";
+  if (v === "inconclusive") return "Inconclusive";
+  if (v === "insufficient_data") return "Insufficient data";
+  return v ?? "—";
 }
 
 export const REVIEW_STATUS_LABEL: Record<MandateReview["status"], string> = {
