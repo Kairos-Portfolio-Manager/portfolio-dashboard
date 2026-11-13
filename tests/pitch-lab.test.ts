@@ -5,8 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   REVIEW_HISTORY_SCHEMA_VERSION, REVIEW_ID_RE, REVIEW_INDEX_KEY, REVIEW_KEY_PREFIX, SNAPSHOT_FIELDS, SNAPSHOT_KEY, SNAPSHOT_SCHEMA_VERSION,
-  beatTiles, fmtET, periodLabel, reviewIndexFrom, snapshotFromEnvelope, timeUntil,
-  type LatestPitch, type MandateReview, type PitchLabSnapshot, type RecentPitch, type ReviewIndexEntry, type ScoreMetric,
+  beatTiles, fmtET, fmtLongDate, periodLabel, upcomingReviewAt, reviewIndexFrom, snapshotFromEnvelope, timeUntil,
+  type LatestPitch, type MandateReview, type Performer, type PitchLabSnapshot, type RecentPitch, type ReviewIndexEntry, type ScoreMetric,
 } from "../lib/pitch-lab";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,7 +27,7 @@ async function backendSnapshot(): Promise<PitchLabSnapshot> {
     rationale: { thesis: "Revenue growth is re-accelerating while the multiple sits below peers.", risks: ["Guidance could disappoint."] },
     peers: { ranks: { revGrowth: ranked(0.95), epsTrajectory: ranked(0.2) } },
   };
-  const outcome = { pitchId: "pitch_a", horizonDays: 5, excessReturn: 0.03, gradedAt: "2026-11-10T22:45:00.000Z", entryDate: "2026-11-03" };
+  const outcome = { pitchId: "pitch_a", horizonDays: 5, excessReturn: 0.03, grossReturn: 0.042, gradedAt: "2026-11-10T22:45:00.000Z", entryDate: "2026-11-03", exitDate: "2026-11-10" };
   return buildPitchLabSnapshot({ pitches: [pitch], outcomes: [outcome], now: new Date("2026-11-04T15:00:00Z") });
 }
 
@@ -50,6 +50,15 @@ test("the backend snapshot has exactly the fields this site reads, at the versio
   assert.deepEqual(keys(snapshot.latest.pitches[0].mandateScore.metrics[0]), keys(metricSample));
   const recentSample: RecentPitch = { ticker: "", date: "", conviction: 0, convictionScale: 10, mandateScore: null, metricsScored: 0, metricsTotal: 9, categories: [], excessReturn: {} };
   assert.deepEqual(keys(snapshot.recent[0]), keys(recentSample));
+  const performerSample: Performer = { ticker: "", pitchDate: "", entryDate: null, exitDate: null, horizonDays: 0, rawReturn: null, excessReturn: null };
+  assert.deepEqual(keys(snapshot.performers!.best[0]), keys(performerSample));
+});
+
+test("the best/worst lists carry the raw return and the day we got in", async () => {
+  const { performers } = await backendSnapshot();
+  assert.ok(performers);
+  assert.deepEqual(performers.best.map((r) => [r.ticker, r.rawReturn, r.entryDate, r.horizonDays]), [["NET", 0.042, "2026-11-03", 5]]);
+  assert.deepEqual(performers.worst, [], "one pitch is never listed as both best and worst");
 });
 
 test("the parsed snapshot carries the score, the breakdown, and the next review time", async () => {
@@ -82,7 +91,7 @@ test("review history: backend keys, ids and index rows match what the site reads
   await publisher.publishMandateReviewHistory([review], { redis });
   const index = reviewIndexFrom(writes.at(-1)?.[1]);
   assert.ok(index);
-  const sample: ReviewIndexEntry = { id: "", period: "", generatedAt: "", status: "no_suggestions", gradedPitches: null, independentWeeks: null, recommended: 0, watch: 0 };
+  const sample: ReviewIndexEntry = { id: "", period: "", generatedAt: "", status: "no_suggestions", gradedPitches: null, independentWeeks: null, recommended: 0, watch: 0, mandateScoreVerdict: null };
   assert.deepEqual(keys(index.reviews[0]), keys(sample));
   assert.equal(index.reviews[0].gradedPitches, 14);
   assert.equal(writes[0][0], `${REVIEW_KEY_PREFIX}${review.id}`);
@@ -95,7 +104,7 @@ test("a generated review has the sections the review page renders", async () => 
   const report = { schemaVersion: REQUIRED_REPORT_SCHEMA, options: { minSample: 30, minClusters: 8 }, periods: [{ id: "all", horizons: [{ horizonDays: 5, graded: 3, clusters: 1 }] }] };
   const review: MandateReview = generateMandateReview(report, AGENT_SCORING["agent-1"], { now: new Date("2026-11-07T16:00:00Z") });
   assert.equal(review.status, "insufficient_data");
-  assert.equal(review.period, "2026-11");
+  assert.equal(review.period, "2026-11-07", "weekly reviews are named by their Saturday");
   assert.ok("mandateScore" in review && "conviction" in review && Array.isArray(review.caveats));
 });
 
@@ -107,7 +116,12 @@ test("review times read in New York time with a plain countdown", () => {
   assert.equal(timeUntil("2026-11-04T20:00:00.000Z", new Date("2026-11-04T15:00:00Z")), "in 5 hours");
   assert.equal(timeUntil("2026-11-04T15:20:00.000Z", new Date("2026-11-04T15:00:00Z")), "in 20 minutes");
   assert.equal(timeUntil("2026-11-04T14:00:00.000Z", new Date("2026-11-04T15:00:00Z")), "due now");
-  assert.equal(periodLabel("2026-11"), "November 2026");
+  assert.equal(periodLabel("2026-11"), "November 2026", "older monthly reviews keep their month");
+  assert.equal(periodLabel("2026-11-14"), "Week of Nov 14, 2026");
+  assert.equal(fmtLongDate("2026-11-14T16:00:00.000Z"), "Saturday, November 14, 2026");
+  assert.equal(upcomingReviewAt("2026-11-14T16:00:00.000Z", new Date("2026-11-13T20:00:00Z")), "2026-11-14T16:00:00.000Z");
+  assert.equal(upcomingReviewAt("2026-11-14T16:00:00.000Z", new Date("2026-11-14T17:00:00Z")), "2026-11-21T16:00:00.000Z", "a past review rolls to next Saturday");
+  assert.equal(upcomingReviewAt(null), null);
   assert.equal(fmtET(null), "—");
 });
 

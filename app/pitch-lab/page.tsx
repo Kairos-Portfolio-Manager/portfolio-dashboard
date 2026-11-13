@@ -6,8 +6,8 @@ import { DefRow, Footnote, Hatch, Metric, MetricStrip, Nil, Panel, PanelHead, Ra
 import { PitchLabNav } from "@/components/pitch-lab/PitchLabNav";
 import { ScoreBar, ScoreBreakdown, ScoreFigure } from "@/components/pitch-lab/ScoreBreakdown";
 import {
-  REVIEW_STATUS_LABEL, beatTiles, fmtDate, fmtET, pct, periodLabel, score10, timeUntil,
-  type LatestPitch, type PitchLabSnapshot, type RecentPitch, type ReviewIndexEntry,
+  REVIEW_STATUS_LABEL, beatTiles, fmtDate, fmtET, pct, periodLabel, score10, timeUntil, upcomingReviewAt,
+  type LatestPitch, type Performer, type PitchLabSnapshot, type RecentPitch, type ReviewIndexEntry,
 } from "@/lib/pitch-lab";
 
 interface ApiResponse {
@@ -19,7 +19,7 @@ interface ApiResponse {
 
 function StatusStrip({ snapshot }: { snapshot: PitchLabSnapshot }) {
   const tiles = beatTiles(snapshot);
-  const review = snapshot.schedule?.nextMandateReviewAt ?? null;
+  const review = upcomingReviewAt(snapshot.schedule?.nextMandateReviewAt);
   return (
     <MetricStrip columns={2 + tiles.length}>
       <Metric
@@ -39,6 +39,75 @@ function StatusStrip({ snapshot }: { snapshot: PitchLabSnapshot }) {
       ))}
       <Metric label="Next review" value={review ? fmtET(review).split(" · ")[0] : <Nil />} sub={review ? `${fmtET(review).split(" · ")[1]} · ${timeUntil(review)}` : undefined} />
     </MetricStrip>
+  );
+}
+
+// ─── Best and worst pitches ──────────────────────────────────────────────────
+
+function PerformerTable({ title, rows, empty }: { title: string; rows: Performer[]; empty: string }) {
+  return (
+    <Panel>
+      <PanelHead title={title} />
+      {rows.length ? (
+        <table className="pm-table">
+          <thead>
+            <tr>
+              <th className="pm-num-cell">#</th>
+              <th>Ticker</th>
+              <th>Invested</th>
+              <th className="pm-num-cell">Held</th>
+              <th className="pm-num-cell">Raw return</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.ticker}-${r.pitchDate}-${r.horizonDays}`}>
+                <td className="pm-num-cell" style={{ color: "var(--muted)" }}>{i + 1}</td>
+                <td className="font-medium" style={{ color: "var(--ink)" }}>{r.ticker}</td>
+                <td className="pm-num" title={`Pitched ${fmtDate(r.pitchDate)}`}>{fmtDate(r.entryDate ?? r.pitchDate)}</td>
+                <td className="pm-num-cell" style={{ color: "var(--muted)" }}>{r.horizonDays}d</td>
+                <td className="pm-num-cell">
+                  <Status tone={r.rawReturn == null ? "muted" : r.rawReturn > 0 ? "pos" : r.rawReturn < 0 ? "neg" : "muted"}>
+                    {pct(r.rawReturn, { signed: true })}
+                  </Status>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <div className="p-6">
+          <Hatch title={empty} />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function BestAndWorst({ snapshot }: { snapshot: PitchLabSnapshot }) {
+  const p = snapshot.performers;
+  if (!p) {
+    return (
+      <Panel>
+        <div className="p-6">
+          <Hatch title="Best and worst pitches" note="Rankings appear after the next snapshot from the updated backend." />
+        </div>
+      </Panel>
+    );
+  }
+  const none = p.ranked ? "Not enough pitches yet" : "No pitch has finished a holding period yet";
+  return (
+    <div className="space-y-px">
+      <div className="grid gap-px md:grid-cols-2">
+        <PerformerTable title="Top 5 pitches" rows={p.best} empty={none} />
+        <PerformerTable title="Worst 5 pitches" rows={p.worst} empty={none} />
+      </div>
+      <p className="pm-label px-[18px] py-2">
+        Raw return: the stock&apos;s own price change, before costs and without comparing to {snapshot.benchmark}, over the longest
+        holding period that pitch has finished ({[...snapshot.horizons].sort((a, b) => a - b).join(", ")} trading days).
+        Invested = the first close after the pitch. {p.ranked} pitch{p.ranked === 1 ? "" : "es"} ranked so far.
+      </p>
+    </div>
   );
 }
 
@@ -173,8 +242,8 @@ function Rail({ snapshot, reviews }: { snapshot: PitchLabSnapshot | null; review
   const latestReview = reviews[0] ?? null;
   return (
     <>
-      <RailBlock title="Reviews" right={<Link href="/pitch-lab/reviews" className="pm-label" style={{ color: "var(--link)" }}>All periods →</Link>}>
-        <DefRow label="Next Mandate Review">{fmtET(snapshot?.schedule?.nextMandateReviewAt)}</DefRow>
+      <RailBlock title="Reviews" right={<Link href="/pitch-lab/reviews" className="pm-label" style={{ color: "var(--link)" }}>Mandate Review →</Link>}>
+        <DefRow label="Next Mandate Review">{fmtET(upcomingReviewAt(snapshot?.schedule?.nextMandateReviewAt))}</DefRow>
         <DefRow label="Next weekly report">{fmtET(snapshot?.schedule?.nextWeeklyReportAt)}</DefRow>
         <DefRow label="Latest review">
           {latestReview ? (
@@ -267,6 +336,7 @@ export default function PitchLabStatusPage() {
         main={
           snapshot ? (
             <div className="space-y-px">
+              <BestAndWorst snapshot={snapshot} />
               <LatestPitches snapshot={snapshot} />
               <RecentPitches snapshot={snapshot} />
             </div>
