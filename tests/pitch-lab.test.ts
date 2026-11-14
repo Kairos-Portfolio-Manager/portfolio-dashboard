@@ -5,12 +5,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   REVIEW_HISTORY_SCHEMA_VERSION, REVIEW_ID_RE, REVIEW_INDEX_KEY, REVIEW_KEY_PREFIX, SNAPSHOT_FIELDS, SNAPSHOT_KEY, SNAPSHOT_SCHEMA_VERSION,
-  beatTiles, fmtET, fmtLongDate, periodLabel, upcomingReviewAt, reviewIndexFrom, snapshotFromEnvelope, timeUntil,
-  type LatestPitch, type MandateReview, type Performer, type PitchLabSnapshot, type RecentPitch, type ReviewIndexEntry, type ScoreMetric,
+  beatTiles, defaultHorizon, defaultLens, judgmentLenses, fmtET, fmtLongDate, periodLabel, upcomingReviewAt, reviewIndexFrom, snapshotFromEnvelope, timeUntil,
+  type JudgmentBlock, type JudgmentGroup, type LatestPitch, type MandateReview, type Performer, type PitchLabSnapshot, type RecentPitch, type ReviewIndexEntry, type ScoreMetric,
 } from "../lib/pitch-lab";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const backendRoot = resolve(here, "../../portfolio-manager");
+// PM_BACKEND_ROOT lets a worktree check the backend out somewhere other than the sibling folder.
+const backendRoot = process.env.PM_BACKEND_ROOT ? resolve(process.env.PM_BACKEND_ROOT) : resolve(here, "../../portfolio-manager");
 
 async function backendModule(relativePath: string) {
   const path = join(backendRoot, relativePath);
@@ -138,4 +139,61 @@ test("Pitch Lab routes check permissions and only read pitchlab: keys", () => {
   }
   assert.match(read("app/api/pitch-lab/reviews/[id]/route.ts"), /REVIEW_ID_RE\.test\(id\)/, "the review id is checked before it becomes a key");
   assert.ok([SNAPSHOT_KEY, REVIEW_INDEX_KEY, REVIEW_KEY_PREFIX].every((key) => key.startsWith("pitchlab:")));
+});
+
+// ─── Judgment (is the rating working?) ───────────────────────────────────────
+
+test("the backend judgment block has exactly the fields the panel reads, and old 1-5 pitches get their own lens", async () => {
+  const { buildPitchLabSnapshot } = await backendModule("lib/pitch-lab/dashboard-snapshot.js");
+  const pitches = [1, 2, 3, 4, 5].map((c) => ({
+    id: `pitch_${c}`, ticker: `T${c}`, conviction: c, pitchedAt: "2026-10-02T22:44:00.000Z",
+    rationale: { thesis: "Legacy pitch on the original five point scale, long enough to validate.", risks: ["r"] },
+  }));
+  const outcomes = pitches.map((p) => ({ pitchId: p.id, horizonDays: 5, excessReturn: (p.conviction - 3) * 0.01, grossReturn: 0.01, gradedAt: "2026-10-12T22:45:00.000Z", entryDate: "2026-10-05", exitDate: "2026-10-12" }));
+  const snapshot = (await buildPitchLabSnapshot({ pitches, outcomes, now: new Date("2026-10-13T15:00:00Z") })) as PitchLabSnapshot;
+  const judgment = snapshot.judgment!;
+  assert.deepEqual(Object.keys(judgment).sort(), ["evidenceBar", "lenses", "version"]);
+  assert.deepEqual(Object.keys(judgment.lenses).sort(), ["conviction", "convictionLegacy", "mandateScore"]);
+
+  const group: JudgmentGroup = { n: 0, meanExcess: null, medianExcess: null, hitRate: null, ratingMin: null, ratingMax: null };
+  const blockSample: JudgmentBlock = {
+    graded: 0, independentWeeks: 0, enoughEvidence: false, cutoff: null, higher: group, middle: group, lower: group, spread: null, rho: null,
+    verdict: { label: "too_early", lean: null, headline: "", detail: "" },
+  };
+  const block = judgment.lenses.convictionLegacy.horizons["5"];
+  assert.deepEqual(keys(block), keys(blockSample));
+  assert.deepEqual(keys(block.higher), keys(group));
+  assert.deepEqual(keys(block.verdict), keys(blockSample.verdict));
+  assert.equal(block.graded, 5);
+  assert.equal(block.verdict.label, "too_early", "5 pitches in one week is below the evidence bar");
+
+  // The page opens on the lens with the most graded pitches (here the old scale) and hides lenses with nothing graded.
+  assert.equal(defaultLens(judgment), "convictionLegacy");
+  assert.ok(judgmentLenses(judgment).every((l) => Object.values(l.horizons).some((b) => b.graded > 0)));
+  assert.equal(defaultHorizon(judgment.lenses.convictionLegacy, 30), 5, "with nothing clearing the bar, the horizon with the most graded wins");
+});
+
+test("Codex P2: the page opens on a verdict that is available, not on the longest horizon that is still too early", () => {
+  const group: JudgmentGroup = { n: 5, meanExcess: 0, medianExcess: 0, hitRate: 0.5, ratingMin: 1, ratingMax: 2 };
+  const block = (graded: number, weeks: number, enough: boolean): JudgmentBlock => ({
+    graded, independentWeeks: weeks, enoughEvidence: enough, cutoff: 3, higher: group, middle: group, lower: group, spread: 0.01, rho: 0.1,
+    verdict: { label: enough ? "working_both_ways" : "too_early", lean: "right", headline: "", detail: "" },
+  });
+  const lens = (id: "conviction" | "convictionLegacy" | "mandateScore", horizons: Record<string, JudgmentBlock>) => ({ id, label: id, unit: "/10", horizons });
+  // 5d: 40 graded over 8 weeks (verdict available); 10d: 31 graded over only 7 weeks (still too early).
+  const a = lens("convictionLegacy", { "5": block(40, 8, true), "10": block(31, 7, false) });
+  assert.equal(defaultHorizon(a, 30), 5);
+  // A lens with 31 graded / 7 weeks must not beat one that has cleared the bar, even with fewer pitches.
+  const b = lens("mandateScore", { "5": block(60, 7, false) });
+  const c = lens("conviction", { "5": block(30, 8, true) });
+  const judgment = { version: "x", evidenceBar: { minGraded: 30, minWeeks: 8 }, lenses: { conviction: c, convictionLegacy: a, mandateScore: b } };
+  assert.equal(defaultLens(judgment), "convictionLegacy", "most graded among the lenses that have a verdict");
+  const onlyB = { ...judgment, lenses: { ...judgment.lenses, conviction: lens("conviction", {}), convictionLegacy: lens("convictionLegacy", {}) } };
+  assert.equal(defaultLens(onlyB), "mandateScore", "falls back to most graded when nothing has a verdict");
+});
+
+test("the page helpers cope with a snapshot published before the judgment backend", () => {
+  assert.equal(defaultLens(undefined), null);
+  assert.deepEqual(judgmentLenses(undefined), []);
+  assert.equal(defaultHorizon(undefined, 30), null);
 });

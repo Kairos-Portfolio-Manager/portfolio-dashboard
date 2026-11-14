@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { DefRow, Footnote, Hatch, Metric, MetricStrip, Nil, Panel, PanelHead, RailBlock, ScreenGrid, Status } from "@/components/chrome";
+import { JudgmentPanel } from "@/components/pitch-lab/JudgmentPanel";
 import { PitchLabNav } from "@/components/pitch-lab/PitchLabNav";
 import { ScoreBar, ScoreBreakdown, ScoreFigure } from "@/components/pitch-lab/ScoreBreakdown";
 import {
-  REVIEW_STATUS_LABEL, beatTiles, fmtDate, fmtET, pct, periodLabel, score10, timeUntil, upcomingReviewAt,
+  JUDGMENT_TONE, REVIEW_STATUS_LABEL, defaultHorizon, defaultLens, fmtDate, fmtET, judgmentLenses, pct, periodLabel, score10, timeUntil, upcomingReviewAt,
   type LatestPitch, type Performer, type PitchLabSnapshot, type RecentPitch, type ReviewIndexEntry,
 } from "@/lib/pitch-lab";
 
@@ -18,25 +19,33 @@ interface ApiResponse {
 // ─── Status strip ────────────────────────────────────────────────────────────
 
 function StatusStrip({ snapshot }: { snapshot: PitchLabSnapshot }) {
-  const tiles = beatTiles(snapshot);
   const review = upcomingReviewAt(snapshot.schedule?.nextMandateReviewAt);
+  const judgment = snapshot.judgment;
+  const lens = judgmentLenses(judgment).find((l) => l.id === defaultLens(judgment));
+  const horizon = defaultHorizon(lens, judgment?.evidenceBar.minGraded ?? 30);
+  const block = lens && horizon != null ? lens.horizons[String(horizon)] : null;
+  const tone = block ? JUDGMENT_TONE[block.verdict.label] : "muted";
+  const bar = judgment?.evidenceBar ?? snapshot.evidenceBar;
   return (
-    <MetricStrip columns={2 + tiles.length}>
+    <MetricStrip columns={4}>
       <Metric
         label="Pitches"
         value={snapshot.program.totalPitches}
         sub={snapshot.program.firstPitchDate ? `since ${fmtDate(snapshot.program.firstPitchDate)} · ${snapshot.program.distinctTickers} tickers` : "none yet"}
       />
-      {tiles.map((t) => (
-        <Metric
-          key={t.horizonDays}
-          label={`Beat ${snapshot.benchmark} · ${t.horizonDays} days`}
-          value={t.graded ? `${t.beat} of ${t.graded}` : <Nil />}
-          muted={!t.graded}
-          tone={t.hitRate == null ? undefined : t.hitRate > 0.5 ? "pos" : t.hitRate < 0.5 ? "neg" : undefined}
-          sub={t.graded ? `${pct(t.hitRate, { places: 0 })} · ${t.pending} not graded yet` : `${t.pending} waiting to be graded`}
-        />
-      ))}
+      <Metric
+        label={block && horizon != null ? `Rating verdict · ${horizon} days` : "Rating verdict"}
+        value={block ? block.verdict.headline : <Nil />}
+        muted={!block || tone === "muted"}
+        tone={tone === "pos" ? "pos" : tone === "neg" ? "neg" : undefined}
+        sub={block ? `${lens?.label.replace(" (original 1-5 scale)", " (old 1–5)")} · ${block.verdict.lean === "right" ? "leaning right" : block.verdict.lean === "wrong" ? "leaning wrong" : block.verdict.lean === "flat" ? "no lean" : "nothing to compare"}` : "waiting for the updated backend"}
+      />
+      <Metric
+        label="Evidence so far"
+        value={block ? `${block.graded} graded` : <Nil />}
+        muted={!block}
+        sub={block ? `${block.independentWeeks} of ${bar.minWeeks} independent weeks · need ${bar.minGraded} graded` : undefined}
+      />
       <Metric label="Next review" value={review ? fmtET(review).split(" · ")[0] : <Nil />} sub={review ? `${fmtET(review).split(" · ")[1]} · ${timeUntil(review)}` : undefined} />
     </MetricStrip>
   );
@@ -336,6 +345,7 @@ export default function PitchLabStatusPage() {
         main={
           snapshot ? (
             <div className="space-y-px">
+              <JudgmentPanel snapshot={snapshot} />
               <BestAndWorst snapshot={snapshot} />
               <LatestPitches snapshot={snapshot} />
               <RecentPitches snapshot={snapshot} />

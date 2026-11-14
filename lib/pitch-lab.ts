@@ -113,6 +113,49 @@ export interface Performers {
   worst: Performer[];
 }
 
+// ─── Judgment: is the rating telling us anything? (backend: lib/pitch-lab/judgment.js) ──
+
+export interface JudgmentGroup {
+  n: number;
+  meanExcess: number | null;
+  medianExcess: number | null;
+  hitRate: number | null;
+  ratingMin: number | null;
+  ratingMax: number | null;
+}
+
+export type JudgmentLabel = "too_early" | "working_both_ways" | "working_one_way" | "no_signal" | "backwards";
+
+export interface JudgmentBlock {
+  graded: number;
+  independentWeeks: number;
+  enoughEvidence: boolean;
+  /** The median rating: pitches above it are "higher-rated", below it "lower-rated", at it "middle". */
+  cutoff: number | null;
+  higher: JudgmentGroup;
+  middle: JudgmentGroup;
+  lower: JudgmentGroup;
+  /** Higher-rated mean excess minus lower-rated mean excess (decimal, 0.02 = 2 points). */
+  spread: number | null;
+  rho: number | null;
+  verdict: { label: JudgmentLabel; lean: "right" | "wrong" | "flat" | null; headline: string; detail: string };
+}
+
+export type JudgmentLensId = "conviction" | "convictionLegacy" | "mandateScore";
+
+export interface JudgmentLens {
+  id: JudgmentLensId;
+  label: string;
+  unit: string;
+  horizons: Record<string, JudgmentBlock>;
+}
+
+export interface Judgment {
+  version: string;
+  evidenceBar: { minGraded: number; minWeeks: number };
+  lenses: Record<JudgmentLensId, JudgmentLens>;
+}
+
 export interface PitchLabSnapshot {
   schemaVersion: string;
   generatedAt: string;
@@ -146,12 +189,14 @@ export interface PitchLabSnapshot {
   scoreboard: Record<string, ScoreboardEntry>;
   /** Absent on snapshots published before the 2026-11-14 backend; the page says so rather than guessing. */
   performers?: Performers;
+  /** Absent on snapshots published before the judgment backend; the page says so rather than guessing. */
+  judgment?: Judgment;
 }
 
 /** Top-level snapshot fields this page reads; the cross-repo test pins them to the backend. */
 export const SNAPSHOT_FIELDS = [
   "benchmark", "convictionScale", "days", "evidenceBar", "generatedAt", "horizons", "latest",
-  "performers", "program", "recent", "schedule", "schemaVersion", "scoreboard",
+  "judgment", "performers", "program", "recent", "schedule", "schemaVersion", "scoreboard",
 ] as const;
 
 // ─── Mandate Review ──────────────────────────────────────────────────────────
@@ -340,6 +385,58 @@ export function beatTiles(snapshot: PitchLabSnapshot): BeatTile[] {
       const entry = snapshot.scoreboard?.[String(h)];
       return { horizonDays: h, graded: entry?.graded ?? 0, beat: entry?.beat ?? 0, hitRate: entry?.hitRate ?? null, pending: entry?.pending ?? 0 };
     });
+}
+
+/** Plain-words verdict shown at a glance, with the colour it takes (never a colour for "too early"). */
+export const JUDGMENT_TONE: Record<JudgmentLabel, "pos" | "neg" | "warn" | "muted"> = {
+  working_both_ways: "pos",
+  working_one_way: "warn",
+  no_signal: "muted",
+  backwards: "neg",
+  too_early: "muted",
+};
+
+const LENS_ORDER: JudgmentLensId[] = ["conviction", "convictionLegacy", "mandateScore"];
+
+function gradedAnywhere(lens: JudgmentLens | undefined): number {
+  return Math.max(0, ...Object.values(lens?.horizons ?? {}).map((b) => b.graded));
+}
+
+/** Lenses that have any graded pitch, in display order; if none do, all of them (the page shows "too early"). */
+export function judgmentLenses(judgment: Judgment | undefined): JudgmentLens[] {
+  if (!judgment) return [];
+  const all = LENS_ORDER.map((id) => judgment.lenses[id]).filter(Boolean);
+  const withData = all.filter((lens) => gradedAnywhere(lens) > 0);
+  return withData.length ? withData : all;
+}
+
+const hasVerdictAnywhere = (lens: JudgmentLens | undefined): boolean => Object.values(lens?.horizons ?? {}).some((b) => b.enoughEvidence);
+
+/**
+ * The lens to open on. A lens that has cleared the whole evidence bar (graded pitches AND independent weeks)
+ * at some holding period wins, so an available verdict is never hidden behind one that is still too early;
+ * otherwise the lens with the most graded pitches. (The new 1-10 conviction scale takes over automatically
+ * as its pitches mature.)
+ */
+export function defaultLens(judgment: Judgment | undefined): JudgmentLensId | null {
+  const lenses = judgmentLenses(judgment);
+  if (!lenses.length) return null;
+  const rank = (lens: JudgmentLens) => [hasVerdictAnywhere(lens) ? 1 : 0, gradedAnywhere(lens)];
+  return [...lenses].sort((a, b) => rank(b)[0] - rank(a)[0] || rank(b)[1] - rank(a)[1])[0].id;
+}
+
+/**
+ * The holding period to open on: the longest one that has cleared the whole evidence bar; if none has,
+ * the longest that has enough graded pitches (weeks are what is missing); else the one with the most graded.
+ */
+export function defaultHorizon(lens: JudgmentLens | undefined, minGraded: number): number | null {
+  const entries = Object.entries(lens?.horizons ?? {}).map(([h, b]) => ({ h: Number(h), graded: b.graded, enough: b.enoughEvidence })).sort((a, b) => a.h - b.h);
+  if (!entries.length) return null;
+  const verdict = entries.filter((e) => e.enough);
+  if (verdict.length) return verdict[verdict.length - 1].h;
+  const cleared = entries.filter((e) => e.graded >= minGraded);
+  if (cleared.length) return cleared[cleared.length - 1].h;
+  return [...entries].sort((a, b) => b.graded - a.graded || a.h - b.h)[0].h;
 }
 
 /** Mandate Review verdicts in plain words. */
