@@ -173,6 +173,25 @@ test("the backend judgment block has exactly the fields the panel reads, and old
   assert.equal(defaultHorizon(judgment.lenses.convictionLegacy, 30), 5, "with nothing clearing the bar, the horizon with the most graded wins");
 });
 
+test("Codex P2: the page opens on a verdict that is available, not on the longest horizon that is still too early", () => {
+  const group: JudgmentGroup = { n: 5, meanExcess: 0, medianExcess: 0, hitRate: 0.5, ratingMin: 1, ratingMax: 2 };
+  const block = (graded: number, weeks: number, enough: boolean): JudgmentBlock => ({
+    graded, independentWeeks: weeks, enoughEvidence: enough, cutoff: 3, higher: group, middle: group, lower: group, spread: 0.01, rho: 0.1,
+    verdict: { label: enough ? "working_both_ways" : "too_early", lean: "right", headline: "", detail: "" },
+  });
+  const lens = (id: "conviction" | "convictionLegacy" | "mandateScore", horizons: Record<string, JudgmentBlock>) => ({ id, label: id, unit: "/10", horizons });
+  // 5d: 40 graded over 8 weeks (verdict available); 10d: 31 graded over only 7 weeks (still too early).
+  const a = lens("convictionLegacy", { "5": block(40, 8, true), "10": block(31, 7, false) });
+  assert.equal(defaultHorizon(a, 30), 5);
+  // A lens with 31 graded / 7 weeks must not beat one that has cleared the bar, even with fewer pitches.
+  const b = lens("mandateScore", { "5": block(60, 7, false) });
+  const c = lens("conviction", { "5": block(30, 8, true) });
+  const judgment = { version: "x", evidenceBar: { minGraded: 30, minWeeks: 8 }, lenses: { conviction: c, convictionLegacy: a, mandateScore: b } };
+  assert.equal(defaultLens(judgment), "convictionLegacy", "most graded among the lenses that have a verdict");
+  const onlyB = { ...judgment, lenses: { ...judgment.lenses, conviction: lens("conviction", {}), convictionLegacy: lens("convictionLegacy", {}) } };
+  assert.equal(defaultLens(onlyB), "mandateScore", "falls back to most graded when nothing has a verdict");
+});
+
 test("the page helpers cope with a snapshot published before the judgment backend", () => {
   assert.equal(defaultLens(undefined), null);
   assert.deepEqual(judgmentLenses(undefined), []);
